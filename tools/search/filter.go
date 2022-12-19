@@ -16,7 +16,6 @@ import (
 // FilterData is a filter expression string following the `fexpr` package grammar.
 //
 // Example:
-//
 //	var filter FilterData = "id = null || (name = 'test' && status = true)"
 //	resolver := search.NewSimpleFieldResolver("id", "name", "status")
 //	expr, err := filter.BuildExpr(resolver)
@@ -85,72 +84,73 @@ func (f FilterData) build(data []fexpr.ExprGroup, fieldResolver FieldResolver) (
 }
 
 func (f FilterData) resolveTokenizedExpr(expr fexpr.Expr, fieldResolver FieldResolver) (dbx.Expression, error) {
-	lName, lParams, lErr := f.resolveToken(expr.Left, fieldResolver)
-	if lName == "" || lErr != nil {
-		return nil, fmt.Errorf("Invalid left operand %q - %v.", expr.Left.Literal, lErr)
+	lResult, lErr := f.resolveToken(expr.Left, fieldResolver)
+	if lErr != nil || lResult.Identifier == "" {
+		return nil, fmt.Errorf("invalid left operand %q - %v", expr.Left.Literal, lErr)
 	}
 
-	rName, rParams, rErr := f.resolveToken(expr.Right, fieldResolver)
-	if rName == "" || rErr != nil {
-		return nil, fmt.Errorf("Invalid right operand %q - %v.", expr.Right.Literal, rErr)
+	rResult, rErr := f.resolveToken(expr.Right, fieldResolver)
+	if rErr != nil || rResult.Identifier == "" {
+		return nil, fmt.Errorf("invalid right operand %q - %v", expr.Right.Literal, rErr)
 	}
 
 	switch expr.Op {
 	case fexpr.SignEq:
-		return dbx.NewExp(fmt.Sprintf("COALESCE(%s, '') = COALESCE(%s, '')", lName, rName), mergeParams(lParams, rParams)), nil
+		return dbx.NewExp(fmt.Sprintf("COALESCE(%s, '') = COALESCE(%s, '')", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, rResult.Params)), nil
 	case fexpr.SignNeq:
-		return dbx.NewExp(fmt.Sprintf("COALESCE(%s, '') != COALESCE(%s, '')", lName, rName), mergeParams(lParams, rParams)), nil
+		return dbx.NewExp(fmt.Sprintf("COALESCE(%s, '') != COALESCE(%s, '')", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, rResult.Params)), nil
 	case fexpr.SignLike:
 		// the right side is a column and therefor wrap it with "%" for contains like behavior
-		if len(rParams) == 0 {
-			return dbx.NewExp(fmt.Sprintf("%s LIKE ('%%' || %s || '%%') ESCAPE '\\'", lName, rName), lParams), nil
+		if len(rResult.Params) == 0 {
+			return dbx.NewExp(fmt.Sprintf("%s LIKE ('%%' || %s || '%%') ESCAPE '\\'", lResult.Identifier, rResult.Identifier), lResult.Params), nil
 		}
 
-		return dbx.NewExp(fmt.Sprintf("%s LIKE %s ESCAPE '\\'", lName, rName), mergeParams(lParams, wrapLikeParams(rParams))), nil
+		return dbx.NewExp(fmt.Sprintf("%s LIKE %s ESCAPE '\\'", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, wrapLikeParams(rResult.Params))), nil
 	case fexpr.SignNlike:
 		// the right side is a column and therefor wrap it with "%" for not-contains like behavior
-		if len(rParams) == 0 {
-			return dbx.NewExp(fmt.Sprintf("%s NOT LIKE ('%%' || %s || '%%') ESCAPE '\\'", lName, rName), lParams), nil
+		if len(rResult.Params) == 0 {
+			return dbx.NewExp(fmt.Sprintf("%s NOT LIKE ('%%' || %s || '%%') ESCAPE '\\'", lResult.Identifier, rResult.Identifier), lResult.Params), nil
 		}
 
 		// normalize operands and switch sides if the left operand is a number/text, but the right one is a column
 		// (usually this shouldn't be needed, but it's kept for backward compatibility)
-		if len(lParams) > 0 && len(rParams) == 0 {
-			return dbx.NewExp(fmt.Sprintf("%s NOT LIKE %s ESCAPE '\\'", rName, lName), wrapLikeParams(lParams)), nil
+		if len(lResult.Params) > 0 && len(rResult.Params) == 0 {
+			return dbx.NewExp(fmt.Sprintf("%s NOT LIKE %s ESCAPE '\\'", rResult.Identifier, lResult.Identifier), wrapLikeParams(lResult.Params)), nil
 		}
 
-		return dbx.NewExp(fmt.Sprintf("%s NOT LIKE %s ESCAPE '\\'", lName, rName), mergeParams(lParams, wrapLikeParams(rParams))), nil
+		return dbx.NewExp(fmt.Sprintf("%s NOT LIKE %s ESCAPE '\\'", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, wrapLikeParams(rResult.Params))), nil
 	case fexpr.SignLt:
-		return dbx.NewExp(fmt.Sprintf("%s < %s", lName, rName), mergeParams(lParams, rParams)), nil
+		return dbx.NewExp(fmt.Sprintf("%s < %s", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, rResult.Params)), nil
 	case fexpr.SignLte:
-		return dbx.NewExp(fmt.Sprintf("%s <= %s", lName, rName), mergeParams(lParams, rParams)), nil
+		return dbx.NewExp(fmt.Sprintf("%s <= %s", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, rResult.Params)), nil
 	case fexpr.SignGt:
-		return dbx.NewExp(fmt.Sprintf("%s > %s", lName, rName), mergeParams(lParams, rParams)), nil
+		return dbx.NewExp(fmt.Sprintf("%s > %s", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, rResult.Params)), nil
 	case fexpr.SignGte:
-		return dbx.NewExp(fmt.Sprintf("%s >= %s", lName, rName), mergeParams(lParams, rParams)), nil
+		return dbx.NewExp(fmt.Sprintf("%s >= %s", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, rResult.Params)), nil
 	}
 
-	return nil, fmt.Errorf("Unknown expression operator %q", expr.Op)
+	return nil, fmt.Errorf("unknown expression operator %q", expr.Op)
 }
 
-func (f FilterData) resolveToken(token fexpr.Token, fieldResolver FieldResolver) (name string, params dbx.Params, err error) {
+func (f FilterData) resolveToken(token fexpr.Token, fieldResolver FieldResolver) (*ResolverResult, error) {
 	switch token.Type {
 	case fexpr.TokenIdentifier:
 		// current datetime constant
 		// ---
 		if token.Literal == "@now" {
 			placeholder := "t" + security.PseudorandomString(8)
-			name := fmt.Sprintf("{:%s}", placeholder)
-			params := dbx.Params{placeholder: types.NowDateTime().String()}
 
-			return name, params, nil
+			return &ResolverResult{
+				Identifier: "{:" + placeholder + "}",
+				Params:     dbx.Params{placeholder: types.NowDateTime().String()},
+			}, nil
 		}
 
 		// custom resolver
 		// ---
-		name, params, err := fieldResolver.Resolve(token.Literal)
+		result, err := fieldResolver.Resolve(token.Literal)
 
-		if name == "" || err != nil {
+		if err != nil || result.Identifier == "" {
 			m := map[string]string{
 				// if `null` field is missing, treat `null` identifier as NULL token
 				"null": "NULL",
@@ -160,27 +160,29 @@ func (f FilterData) resolveToken(token fexpr.Token, fieldResolver FieldResolver)
 				"false": "0",
 			}
 			if v, ok := m[strings.ToLower(token.Literal)]; ok {
-				return v, nil, nil
+				return &ResolverResult{Identifier: v}, nil
 			}
-			return "", nil, err
+			return nil, err
 		}
 
-		return name, params, err
+		return result, err
 	case fexpr.TokenText:
 		placeholder := "t" + security.PseudorandomString(8)
-		name := fmt.Sprintf("{:%s}", placeholder)
-		params := dbx.Params{placeholder: token.Literal}
 
-		return name, params, nil
+		return &ResolverResult{
+			Identifier: "{:" + placeholder + "}",
+			Params:     dbx.Params{placeholder: token.Literal},
+		}, nil
 	case fexpr.TokenNumber:
 		placeholder := "t" + security.PseudorandomString(8)
-		name := fmt.Sprintf("{:%s}", placeholder)
-		params := dbx.Params{placeholder: cast.ToFloat64(token.Literal)}
 
-		return name, params, nil
+		return &ResolverResult{
+			Identifier: "{:" + placeholder + "}",
+			Params:     dbx.Params{placeholder: cast.ToFloat64(token.Literal)},
+		}, nil
 	}
 
-	return "", nil, errors.New("Unresolvable token type.")
+	return nil, errors.New("unresolvable token type")
 }
 
 // mergeParams returns new dbx.Params where each provided params item

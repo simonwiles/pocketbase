@@ -136,9 +136,9 @@ func (r *RecordFieldResolver) UpdateQuery(query *dbx.SelectQuery) error {
 //	@request.status
 //	@request.auth.someRelation.name
 //	@collection.product.name
-func (r *RecordFieldResolver) Resolve(fieldName string) (resultName string, placeholderParams dbx.Params, err error) {
+func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult, error) {
 	if len(r.allowedFields) > 0 && !list.ExistInSliceWithRegex(fieldName, r.allowedFields) {
-		return "", nil, fmt.Errorf("Failed to resolve field %q", fieldName)
+		return nil, fmt.Errorf("failed to resolve field %q", fieldName)
 	}
 
 	props := strings.Split(fieldName, ".")
@@ -155,7 +155,7 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (resultName string, plac
 	// must be in the format "@collection.COLLECTION_NAME.FIELD[.FIELD2....]"
 	if props[0] == "@collection" {
 		if len(props) < 3 {
-			return "", nil, fmt.Errorf("Invalid @collection field path in %q.", fieldName)
+			return nil, fmt.Errorf("invalid @collection field path in %q", fieldName)
 		}
 
 		currentCollectionName = props[1]
@@ -163,7 +163,7 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (resultName string, plac
 
 		collection, err := r.loadCollection(currentCollectionName)
 		if err != nil {
-			return "", nil, fmt.Errorf("Failed to load collection %q from field path %q.", currentCollectionName, fieldName)
+			return nil, fmt.Errorf("failed to load collection %q from field path %q", currentCollectionName, fieldName)
 		}
 
 		// always allow hidden fields since the @collection.* filter is a system one
@@ -174,11 +174,11 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (resultName string, plac
 		props = props[2:] // leave only the collection fields
 	} else if props[0] == "@request" {
 		if len(props) == 1 {
-			return "", nil, fmt.Errorf("Invalid @request data field path in %q.", fieldName)
+			return nil, fmt.Errorf("invalid @request data field path in %q", fieldName)
 		}
 
 		if r.requestData == nil {
-			return "NULL", nil, nil
+			return &search.ResolverResult{Identifier: "NULL"}, nil
 		}
 
 		// plain @request.* field
@@ -196,7 +196,7 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (resultName string, plac
 		// resolve the auth collection fields
 		// ---
 		if r.requestData == nil || r.requestData.AuthRecord == nil || r.requestData.AuthRecord.Collection() == nil {
-			return "NULL", nil, nil
+			return &search.ResolverResult{Identifier: "NULL"}, nil
 		}
 
 		collection := r.requestData.AuthRecord.Collection()
@@ -229,7 +229,7 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (resultName string, plac
 	for i, prop := range props {
 		collection, err := r.loadCollection(currentCollectionName)
 		if err != nil {
-			return "", nil, fmt.Errorf("Failed to resolve field %q.", prop)
+			return nil, fmt.Errorf("failed to resolve field %q", prop)
 		}
 
 		systemFieldNames := schema.BaseModelFieldNames()
@@ -254,21 +254,27 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (resultName string, plac
 				)))
 			}
 
-			return fmt.Sprintf("[[%s.%s]]", currentTableAlias, inflector.Columnify(prop)), nil, nil
+			return &search.ResolverResult{
+				Identifier: fmt.Sprintf("[[%s.%s]]", currentTableAlias, inflector.Columnify(prop)),
+			}, nil
 		}
 
 		field := collection.Schema.GetFieldByName(prop)
 		if field == nil {
 			if nullifyMisingField {
-				return "NULL", nil, nil
+				return &search.ResolverResult{
+					Identifier: "NULL",
+				}, nil
 			}
 
-			return "", nil, fmt.Errorf("Unrecognized field %q.", prop)
+			return nil, fmt.Errorf("unrecognized field %q", prop)
 		}
 
 		// last prop
 		if i == totalProps-1 {
-			return fmt.Sprintf("[[%s.%s]]", currentTableAlias, inflector.Columnify(prop)), nil, nil
+			return &search.ResolverResult{
+				Identifier: fmt.Sprintf("[[%s.%s]]", currentTableAlias, inflector.Columnify(prop)),
+			}, nil
 		}
 
 		// check if it is a json field
@@ -285,17 +291,19 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (resultName string, plac
 					jsonPath.WriteString(inflector.Columnify(p))
 				}
 			}
-			return fmt.Sprintf(
-				"JSON_EXTRACT([[%s.%s]], '%s')",
-				currentTableAlias,
-				inflector.Columnify(prop),
-				jsonPath.String(),
-			), nil, nil
+			return &search.ResolverResult{
+				Identifier: fmt.Sprintf(
+					"JSON_EXTRACT([[%s.%s]], '%s')",
+					currentTableAlias,
+					inflector.Columnify(prop),
+					jsonPath.String(),
+				),
+			}, nil
 		}
 
 		// check if it is a relation field
 		if field.Type != schema.FieldTypeRelation {
-			return "", nil, fmt.Errorf("Field %q is not a valid relation.", prop)
+			return nil, fmt.Errorf("field %q is not a valid relation", prop)
 		}
 
 		// auto join the relation
@@ -303,12 +311,12 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (resultName string, plac
 		field.InitOptions()
 		options, ok := field.Options.(*schema.RelationOptions)
 		if !ok {
-			return "", nil, fmt.Errorf("Failed to initialize field %q options.", prop)
+			return nil, fmt.Errorf("failed to initialize field %q options", prop)
 		}
 
 		relCollection, relErr := r.loadCollection(options.CollectionId)
 		if relErr != nil {
-			return "", nil, fmt.Errorf("Failed to find field %q collection.", prop)
+			return nil, fmt.Errorf("failed to find field %q collection", prop)
 		}
 
 		cleanFieldName := inflector.Columnify(field.Name)
@@ -337,17 +345,17 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (resultName string, plac
 		currentTableAlias = newTableAlias
 	}
 
-	return "", nil, fmt.Errorf("Failed to resolve field %q.", fieldName)
+	return nil, fmt.Errorf("failed to resolve field %q", fieldName)
 }
 
-func (r *RecordFieldResolver) resolveStaticRequestField(path ...string) (resultName string, placeholderParams dbx.Params, err error) {
+func (r *RecordFieldResolver) resolveStaticRequestField(path ...string) (*search.ResolverResult, error) {
 	// ignore error because requestData is dynamic and some of the
 	// lookup keys may not be defined for the request
 	resultVal, _ := extractNestedMapVal(r.staticRequestData, path...)
 
 	switch v := resultVal.(type) {
 	case nil:
-		return "NULL", nil, nil
+		return &search.ResolverResult{Identifier: "NULL"}, nil
 	case string, bool, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, float32, float64:
 		// no further processing is needed...
 	default:
@@ -367,10 +375,11 @@ func (r *RecordFieldResolver) resolveStaticRequestField(path ...string) (resultN
 	}
 
 	placeholder := "f" + security.PseudorandomString(5)
-	name := fmt.Sprintf("{:%s}", placeholder)
-	params := dbx.Params{placeholder: resultVal}
 
-	return name, params, nil
+	return &search.ResolverResult{
+		Identifier: "{:" + placeholder + "}",
+		Params: dbx.Params{placeholder: resultVal},
+	}, nil
 }
 
 func extractNestedMapVal(m map[string]any, keys ...string) (result any, err error) {

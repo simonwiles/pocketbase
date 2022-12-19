@@ -230,7 +230,7 @@ func TestRecordFieldResolverResolveSchemaFields(t *testing.T) {
 	}
 
 	for _, s := range scenarios {
-		name, params, err := r.Resolve(s.fieldName)
+		r, err := r.Resolve(s.fieldName)
 
 		hasErr := err != nil
 		if hasErr != s.expectError {
@@ -238,13 +238,17 @@ func TestRecordFieldResolverResolveSchemaFields(t *testing.T) {
 			continue
 		}
 
-		if name != s.expectName {
-			t.Errorf("(%q) Expected name %q, got %q", s.fieldName, s.expectName, name)
+		if hasErr {
+			continue
+		}
+
+		if r.Identifier != s.expectName {
+			t.Errorf("(%q) Expected r.Identifier %q, got %q", s.fieldName, s.expectName, r.Identifier)
 		}
 
 		// params should be empty for non @request fields
-		if len(params) != 0 {
-			t.Errorf("(%q) Expected 0 params, got %v", s.fieldName, params)
+		if len(r.Params) != 0 {
+			t.Errorf("(%q) Expected 0 r.Params, got %v", s.fieldName, r.Params)
 		}
 	}
 }
@@ -304,7 +308,7 @@ func TestRecordFieldResolverResolveStaticRequestDataFields(t *testing.T) {
 	}
 
 	for i, s := range scenarios {
-		name, params, err := r.Resolve(s.fieldName)
+		r, err := r.Resolve(s.fieldName)
 
 		hasErr := err != nil
 		if hasErr != s.expectError {
@@ -318,34 +322,34 @@ func TestRecordFieldResolverResolveStaticRequestDataFields(t *testing.T) {
 
 		// missing key
 		// ---
-		if len(params) == 0 {
-			if name != "NULL" {
-				t.Errorf("(%d) Expected 0 placeholder parameters for %v, got %v", i, name, params)
+		if len(r.Params) == 0 {
+			if r.Identifier != "NULL" {
+				t.Errorf("(%d) Expected 0 placeholder parameters for %v, got %v", i, r.Identifier, r.Params)
 			}
 			continue
 		}
 
 		// existing key
 		// ---
-		if len(params) != 1 {
-			t.Errorf("(%d) Expected 1 placeholder parameter for %v, got %v", i, name, params)
+		if len(r.Params) != 1 {
+			t.Errorf("(%d) Expected 1 placeholder parameter for %v, got %v", i, r.Identifier, r.Params)
 			continue
 		}
 
 		var paramName string
 		var paramValue any
-		for k, v := range params {
+		for k, v := range r.Params {
 			paramName = k
 			paramValue = v
 		}
 
-		if name != ("{:" + paramName + "}") {
-			t.Errorf("(%d) Expected parameter name %q, got %q", i, paramName, name)
+		if r.Identifier != ("{:" + paramName + "}") {
+			t.Errorf("(%d) Expected parameter r.Identifier %q, got %q", i, paramName, r.Identifier)
 		}
 
 		encodedParamValue, _ := json.Marshal(paramValue)
 		if string(encodedParamValue) != s.expectParamValue {
-			t.Errorf("(%d) Expected params %v for %v, got %v", i, s.expectParamValue, name, string(encodedParamValue))
+			t.Errorf("(%d) Expected r.Params %v for %v, got %v", i, s.expectParamValue, r.Identifier, string(encodedParamValue))
 		}
 	}
 }
