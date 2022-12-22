@@ -12,6 +12,7 @@ import (
 type ResolverResult struct {
 	Identifier     string
 	Params         dbx.Params
+	MultiMatch     bool
 	AdditionalExpr dbx.Expression
 }
 

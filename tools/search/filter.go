@@ -84,55 +84,68 @@ func (f FilterData) build(data []fexpr.ExprGroup, fieldResolver FieldResolver) (
 }
 
 func (f FilterData) resolveTokenizedExpr(expr fexpr.Expr, fieldResolver FieldResolver) (dbx.Expression, error) {
-	lResult, lErr := f.resolveToken(expr.Left, fieldResolver)
+	lResult, lErr := resolveToken(expr.Left, fieldResolver)
 	if lErr != nil || lResult.Identifier == "" {
 		return nil, fmt.Errorf("invalid left operand %q - %v", expr.Left.Literal, lErr)
 	}
 
-	rResult, rErr := f.resolveToken(expr.Right, fieldResolver)
+	rResult, rErr := resolveToken(expr.Right, fieldResolver)
 	if rErr != nil || rResult.Identifier == "" {
 		return nil, fmt.Errorf("invalid right operand %q - %v", expr.Right.Literal, rErr)
 	}
 
-	switch expr.Op {
-	case fexpr.SignEq:
-		return dbx.NewExp(fmt.Sprintf("COALESCE(%s, '') = COALESCE(%s, '')", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, rResult.Params)), nil
-	case fexpr.SignNeq:
-		return dbx.NewExp(fmt.Sprintf("COALESCE(%s, '') != COALESCE(%s, '')", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, rResult.Params)), nil
-	case fexpr.SignLike:
-		// the right side is a column and therefor wrap it with "%" for contains like behavior
-		if len(rResult.Params) == 0 {
-			return dbx.NewExp(fmt.Sprintf("%s LIKE ('%%' || %s || '%%') ESCAPE '\\'", lResult.Identifier, rResult.Identifier), lResult.Params), nil
-		}
-
-		return dbx.NewExp(fmt.Sprintf("%s LIKE %s ESCAPE '\\'", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, wrapLikeParams(rResult.Params))), nil
-	case fexpr.SignNlike:
-		// the right side is a column and therefor wrap it with "%" for not-contains like behavior
-		if len(rResult.Params) == 0 {
-			return dbx.NewExp(fmt.Sprintf("%s NOT LIKE ('%%' || %s || '%%') ESCAPE '\\'", lResult.Identifier, rResult.Identifier), lResult.Params), nil
-		}
-
-		// normalize operands and switch sides if the left operand is a number/text, but the right one is a column
-		// (usually this shouldn't be needed, but it's kept for backward compatibility)
-		if len(lResult.Params) > 0 && len(rResult.Params) == 0 {
-			return dbx.NewExp(fmt.Sprintf("%s NOT LIKE %s ESCAPE '\\'", rResult.Identifier, lResult.Identifier), wrapLikeParams(lResult.Params)), nil
-		}
-
-		return dbx.NewExp(fmt.Sprintf("%s NOT LIKE %s ESCAPE '\\'", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, wrapLikeParams(rResult.Params))), nil
-	case fexpr.SignLt:
-		return dbx.NewExp(fmt.Sprintf("%s < %s", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, rResult.Params)), nil
-	case fexpr.SignLte:
-		return dbx.NewExp(fmt.Sprintf("%s <= %s", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, rResult.Params)), nil
-	case fexpr.SignGt:
-		return dbx.NewExp(fmt.Sprintf("%s > %s", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, rResult.Params)), nil
-	case fexpr.SignGte:
-		return dbx.NewExp(fmt.Sprintf("%s >= %s", lResult.Identifier, rResult.Identifier), mergeParams(lResult.Params, rResult.Params)), nil
+	resolved, err := f.buildExpr(lResult, expr.Op, rResult)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, fmt.Errorf("unknown expression operator %q", expr.Op)
+	if lResult.AdditionalExpr != nil {
+		resolved = dbx.And(resolved, lResult.AdditionalExpr)
+	}
+
+	if rResult.AdditionalExpr != nil {
+		resolved = dbx.And(resolved, rResult.AdditionalExpr)
+	}
+
+	return resolved, nil
 }
 
-func (f FilterData) resolveToken(token fexpr.Token, fieldResolver FieldResolver) (*ResolverResult, error) {
+func (f FilterData) buildExpr(
+	left *ResolverResult,
+	op fexpr.SignOp,
+	right *ResolverResult,
+) (dbx.Expression, error) {
+	switch op {
+	case fexpr.SignEq:
+		return dbx.NewExp(fmt.Sprintf("COALESCE(%s, '') = COALESCE(%s, '')", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params)), nil
+	case fexpr.SignNeq:
+		return dbx.NewExp(fmt.Sprintf("COALESCE(%s, '') != COALESCE(%s, '')", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params)), nil
+	case fexpr.SignLike:
+		// the right side is a column and therefor wrap it with "%" for contains like behavior
+		if len(right.Params) == 0 {
+			return dbx.NewExp(fmt.Sprintf("%s LIKE ('%%' || %s || '%%') ESCAPE '\\'", left.Identifier, right.Identifier), left.Params), nil
+		}
+		return dbx.NewExp(fmt.Sprintf("%s LIKE %s ESCAPE '\\'", left.Identifier, right.Identifier), mergeParams(left.Params, wrapLikeParams(right.Params))), nil
+	case fexpr.SignNlike:
+		// the right side is a column and therefor wrap it with "%" for not-contains like behavior
+		if len(right.Params) == 0 {
+			return dbx.NewExp(fmt.Sprintf("%s NOT LIKE ('%%' || %s || '%%') ESCAPE '\\'", left.Identifier, right.Identifier), left.Params), nil
+		}
+		return dbx.NewExp(fmt.Sprintf("%s NOT LIKE %s ESCAPE '\\'", left.Identifier, right.Identifier), mergeParams(left.Params, wrapLikeParams(right.Params))), nil
+	case fexpr.SignLt:
+		return dbx.NewExp(fmt.Sprintf("%s < %s", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params)), nil
+	case fexpr.SignLte:
+		return dbx.NewExp(fmt.Sprintf("%s <= %s", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params)), nil
+	case fexpr.SignGt:
+		return dbx.NewExp(fmt.Sprintf("%s > %s", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params)), nil
+	case fexpr.SignGte:
+		return dbx.NewExp(fmt.Sprintf("%s >= %s", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params)), nil
+	}
+
+	return nil, fmt.Errorf("unknown expression operator %q", op)
+}
+
+func resolveToken(token fexpr.Token, fieldResolver FieldResolver) (*ResolverResult, error) {
 	switch token.Type {
 	case fexpr.TokenIdentifier:
 		// current datetime constant
@@ -249,12 +262,12 @@ func (e *concatExpr) Build(db *dbx.DB, params dbx.Params) string {
 
 	stringParts := make([]string, 0, len(e.parts))
 
-	for _, a := range e.parts {
-		if a == nil {
+	for _, p := range e.parts {
+		if p == nil {
 			continue
 		}
 
-		if sql := a.Build(db, params); sql != "" {
+		if sql := p.Build(db, params); sql != "" {
 			stringParts = append(stringParts, sql)
 		}
 	}

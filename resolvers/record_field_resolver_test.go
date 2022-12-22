@@ -9,6 +9,7 @@ import (
 	"github.com/pocketbase/pocketbase/resolvers"
 	"github.com/pocketbase/pocketbase/tests"
 	"github.com/pocketbase/pocketbase/tools/list"
+	"github.com/pocketbase/pocketbase/tools/search"
 )
 
 func TestRecordFieldResolverUpdateQuery(t *testing.T) {
@@ -21,6 +22,16 @@ func TestRecordFieldResolverUpdateQuery(t *testing.T) {
 	}
 
 	requestData := &models.RequestData{
+		Query: map[string]any{
+			"a": nil,
+			"b": 123,
+		},
+		Data: map[string]any{
+			"a":        nil,
+			"b":        123,
+			"rel_one":  "test",
+			"rel_many": []string{"test1", "test2"},
+		},
 		AuthRecord: authRecord,
 	}
 
@@ -32,81 +43,74 @@ func TestRecordFieldResolverUpdateQuery(t *testing.T) {
 		expectQuery        string
 	}{
 		{
-			"missing field",
-			"demo4",
-			[]string{""},
-			false,
-			"SELECT `demo4`.* FROM `demo4`",
-		},
-		{
 			"non relation field",
 			"demo4",
 			[]string{"title"},
 			false,
-			"SELECT `demo4`.* FROM `demo4`",
+			"SELECT `demo4`.* FROM `demo4` WHERE [[demo4.title]] > 1",
 		},
 		{
 			"incomplete rel",
 			"demo4",
 			[]string{"self_rel_one"},
 			false,
-			"SELECT `demo4`.* FROM `demo4`",
+			"SELECT `demo4`.* FROM `demo4` WHERE [[demo4.self_rel_one]] > 1",
 		},
 		{
 			"single rel (self rel)",
 			"demo4",
 			[]string{"self_rel_one.title"},
 			false,
-			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_one]]) THEN [[demo4.self_rel_one]] ELSE json_array([[demo4.self_rel_one]]) END) `demo4_self_rel_one_je` LEFT JOIN `demo4` `demo4_self_rel_one` ON [[demo4_self_rel_one.id]] = [[demo4_self_rel_one_je.value]]",
+			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_one]]) THEN [[demo4.self_rel_one]] ELSE json_array([[demo4.self_rel_one]]) END) `demo4_self_rel_one_je` LEFT JOIN `demo4` `demo4_self_rel_one` ON [[demo4_self_rel_one.id]] = [[demo4_self_rel_one_je.value]] WHERE [[demo4_self_rel_one.title]] > 1",
 		},
 		{
 			"single rel (other collection)",
 			"demo4",
 			[]string{"rel_one_cascade.title"},
 			false,
-			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.rel_one_cascade]]) THEN [[demo4.rel_one_cascade]] ELSE json_array([[demo4.rel_one_cascade]]) END) `demo4_rel_one_cascade_je` LEFT JOIN `demo3` `demo4_rel_one_cascade` ON [[demo4_rel_one_cascade.id]] = [[demo4_rel_one_cascade_je.value]]",
+			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.rel_one_cascade]]) THEN [[demo4.rel_one_cascade]] ELSE json_array([[demo4.rel_one_cascade]]) END) `demo4_rel_one_cascade_je` LEFT JOIN `demo3` `demo4_rel_one_cascade` ON [[demo4_rel_one_cascade.id]] = [[demo4_rel_one_cascade_je.value]] WHERE [[demo4_rel_one_cascade.title]] > 1",
 		},
 		{
 			"non-relation field + single rel",
 			"demo4",
 			[]string{"title", "self_rel_one.title"},
 			false,
-			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_one]]) THEN [[demo4.self_rel_one]] ELSE json_array([[demo4.self_rel_one]]) END) `demo4_self_rel_one_je` LEFT JOIN `demo4` `demo4_self_rel_one` ON [[demo4_self_rel_one.id]] = [[demo4_self_rel_one_je.value]]",
+			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_one]]) THEN [[demo4.self_rel_one]] ELSE json_array([[demo4.self_rel_one]]) END) `demo4_self_rel_one_je` LEFT JOIN `demo4` `demo4_self_rel_one` ON [[demo4_self_rel_one.id]] = [[demo4_self_rel_one_je.value]] WHERE ([[demo4.title]] > 1 OR [[demo4_self_rel_one.title]] > 1)",
 		},
 		{
 			"nested incomplete rels",
 			"demo4",
 			[]string{"self_rel_many.self_rel_one"},
 			false,
-			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_many]]) THEN [[demo4.self_rel_many]] ELSE json_array([[demo4.self_rel_many]]) END) `demo4_self_rel_many_je` LEFT JOIN `demo4` `demo4_self_rel_many` ON [[demo4_self_rel_many.id]] = [[demo4_self_rel_many_je.value]]",
+			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_many]]) THEN [[demo4.self_rel_many]] ELSE json_array([[demo4.self_rel_many]]) END) `demo4_self_rel_many_je` LEFT JOIN `demo4` `demo4_self_rel_many` ON [[demo4_self_rel_many.id]] = [[demo4_self_rel_many_je.value]] WHERE [[demo4_self_rel_many.self_rel_one]] > 1",
 		},
 		{
 			"nested complete rels",
 			"demo4",
 			[]string{"self_rel_many.self_rel_one.title"},
 			false,
-			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_many]]) THEN [[demo4.self_rel_many]] ELSE json_array([[demo4.self_rel_many]]) END) `demo4_self_rel_many_je` LEFT JOIN `demo4` `demo4_self_rel_many` ON [[demo4_self_rel_many.id]] = [[demo4_self_rel_many_je.value]] LEFT JOIN json_each(CASE WHEN json_valid([[demo4_self_rel_many.self_rel_one]]) THEN [[demo4_self_rel_many.self_rel_one]] ELSE json_array([[demo4_self_rel_many.self_rel_one]]) END) `demo4_self_rel_many_self_rel_one_je` LEFT JOIN `demo4` `demo4_self_rel_many_self_rel_one` ON [[demo4_self_rel_many_self_rel_one.id]] = [[demo4_self_rel_many_self_rel_one_je.value]]",
+			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_many]]) THEN [[demo4.self_rel_many]] ELSE json_array([[demo4.self_rel_many]]) END) `demo4_self_rel_many_je` LEFT JOIN `demo4` `demo4_self_rel_many` ON [[demo4_self_rel_many.id]] = [[demo4_self_rel_many_je.value]] LEFT JOIN json_each(CASE WHEN json_valid([[demo4_self_rel_many.self_rel_one]]) THEN [[demo4_self_rel_many.self_rel_one]] ELSE json_array([[demo4_self_rel_many.self_rel_one]]) END) `demo4_self_rel_many_self_rel_one_je` LEFT JOIN `demo4` `demo4_self_rel_many_self_rel_one` ON [[demo4_self_rel_many_self_rel_one.id]] = [[demo4_self_rel_many_self_rel_one_je.value]] WHERE [[demo4_self_rel_many_self_rel_one.title]] > 1",
 		},
 		{
 			"repeated nested rels",
 			"demo4",
 			[]string{"self_rel_many.self_rel_one.self_rel_many.self_rel_one.title"},
 			false,
-			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_many]]) THEN [[demo4.self_rel_many]] ELSE json_array([[demo4.self_rel_many]]) END) `demo4_self_rel_many_je` LEFT JOIN `demo4` `demo4_self_rel_many` ON [[demo4_self_rel_many.id]] = [[demo4_self_rel_many_je.value]] LEFT JOIN json_each(CASE WHEN json_valid([[demo4_self_rel_many.self_rel_one]]) THEN [[demo4_self_rel_many.self_rel_one]] ELSE json_array([[demo4_self_rel_many.self_rel_one]]) END) `demo4_self_rel_many_self_rel_one_je` LEFT JOIN `demo4` `demo4_self_rel_many_self_rel_one` ON [[demo4_self_rel_many_self_rel_one.id]] = [[demo4_self_rel_many_self_rel_one_je.value]] LEFT JOIN json_each(CASE WHEN json_valid([[demo4_self_rel_many_self_rel_one.self_rel_many]]) THEN [[demo4_self_rel_many_self_rel_one.self_rel_many]] ELSE json_array([[demo4_self_rel_many_self_rel_one.self_rel_many]]) END) `demo4_self_rel_many_self_rel_one_self_rel_many_je` LEFT JOIN `demo4` `demo4_self_rel_many_self_rel_one_self_rel_many` ON [[demo4_self_rel_many_self_rel_one_self_rel_many.id]] = [[demo4_self_rel_many_self_rel_one_self_rel_many_je.value]] LEFT JOIN json_each(CASE WHEN json_valid([[demo4_self_rel_many_self_rel_one_self_rel_many.self_rel_one]]) THEN [[demo4_self_rel_many_self_rel_one_self_rel_many.self_rel_one]] ELSE json_array([[demo4_self_rel_many_self_rel_one_self_rel_many.self_rel_one]]) END) `demo4_self_rel_many_self_rel_one_self_rel_many_self_rel_one_je` LEFT JOIN `demo4` `demo4_self_rel_many_self_rel_one_self_rel_many_self_rel_one` ON [[demo4_self_rel_many_self_rel_one_self_rel_many_self_rel_one.id]] = [[demo4_self_rel_many_self_rel_one_self_rel_many_self_rel_one_je.value]]",
+			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_many]]) THEN [[demo4.self_rel_many]] ELSE json_array([[demo4.self_rel_many]]) END) `demo4_self_rel_many_je` LEFT JOIN `demo4` `demo4_self_rel_many` ON [[demo4_self_rel_many.id]] = [[demo4_self_rel_many_je.value]] LEFT JOIN json_each(CASE WHEN json_valid([[demo4_self_rel_many.self_rel_one]]) THEN [[demo4_self_rel_many.self_rel_one]] ELSE json_array([[demo4_self_rel_many.self_rel_one]]) END) `demo4_self_rel_many_self_rel_one_je` LEFT JOIN `demo4` `demo4_self_rel_many_self_rel_one` ON [[demo4_self_rel_many_self_rel_one.id]] = [[demo4_self_rel_many_self_rel_one_je.value]] LEFT JOIN json_each(CASE WHEN json_valid([[demo4_self_rel_many_self_rel_one.self_rel_many]]) THEN [[demo4_self_rel_many_self_rel_one.self_rel_many]] ELSE json_array([[demo4_self_rel_many_self_rel_one.self_rel_many]]) END) `demo4_self_rel_many_self_rel_one_self_rel_many_je` LEFT JOIN `demo4` `demo4_self_rel_many_self_rel_one_self_rel_many` ON [[demo4_self_rel_many_self_rel_one_self_rel_many.id]] = [[demo4_self_rel_many_self_rel_one_self_rel_many_je.value]] LEFT JOIN json_each(CASE WHEN json_valid([[demo4_self_rel_many_self_rel_one_self_rel_many.self_rel_one]]) THEN [[demo4_self_rel_many_self_rel_one_self_rel_many.self_rel_one]] ELSE json_array([[demo4_self_rel_many_self_rel_one_self_rel_many.self_rel_one]]) END) `demo4_self_rel_many_self_rel_one_self_rel_many_self_rel_one_je` LEFT JOIN `demo4` `demo4_self_rel_many_self_rel_one_self_rel_many_self_rel_one` ON [[demo4_self_rel_many_self_rel_one_self_rel_many_self_rel_one.id]] = [[demo4_self_rel_many_self_rel_one_self_rel_many_self_rel_one_je.value]] WHERE [[demo4_self_rel_many_self_rel_one_self_rel_many_self_rel_one.title]] > 1",
 		},
 		{
 			"multiple rels",
 			"demo4",
-			[]string{"self_rel_many.title", "self_rel_one.onefile"},
+			[]string{"self_rel_many.title", "self_rel_one.json_object.a"},
 			false,
-			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_many]]) THEN [[demo4.self_rel_many]] ELSE json_array([[demo4.self_rel_many]]) END) `demo4_self_rel_many_je` LEFT JOIN `demo4` `demo4_self_rel_many` ON [[demo4_self_rel_many.id]] = [[demo4_self_rel_many_je.value]] LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_one]]) THEN [[demo4.self_rel_one]] ELSE json_array([[demo4.self_rel_one]]) END) `demo4_self_rel_one_je` LEFT JOIN `demo4` `demo4_self_rel_one` ON [[demo4_self_rel_one.id]] = [[demo4_self_rel_one_je.value]]",
+			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_many]]) THEN [[demo4.self_rel_many]] ELSE json_array([[demo4.self_rel_many]]) END) `demo4_self_rel_many_je` LEFT JOIN `demo4` `demo4_self_rel_many` ON [[demo4_self_rel_many.id]] = [[demo4_self_rel_many_je.value]] LEFT JOIN json_each(CASE WHEN json_valid([[demo4.self_rel_one]]) THEN [[demo4.self_rel_one]] ELSE json_array([[demo4.self_rel_one]]) END) `demo4_self_rel_one_je` LEFT JOIN `demo4` `demo4_self_rel_one` ON [[demo4_self_rel_one.id]] = [[demo4_self_rel_one_je.value]] WHERE ([[demo4_self_rel_many.title]] > 1 OR JSON_EXTRACT([[demo4_self_rel_one.json_object]], '$.a') > 1)",
 		},
 		{
 			"@collection join",
 			"demo4",
 			[]string{"@collection.demo1.text", "@collection.demo2.active", "@collection.demo1.file_one"},
 			false,
-			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN `demo1` `__collection_demo1` LEFT JOIN `demo2` `__collection_demo2`",
+			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN `demo1` `__collection_demo1` LEFT JOIN `demo2` `__collection_demo2` WHERE ([[__collection_demo1.text]] > 1 OR [[__collection_demo2.active]] > 1 OR [[__collection_demo1.file_one]] > 1)",
 		},
 		{
 			"@request.auth fields",
@@ -114,9 +118,16 @@ func TestRecordFieldResolverUpdateQuery(t *testing.T) {
 			[]string{"@request.auth.id", "@request.auth.username", "@request.auth.rel.title", "@request.data.demo"},
 			false,
 			"^" +
-				regexp.QuoteMeta("SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN `users` `__auth_users` ON [[__auth_users.id]] =") +
-				" {:.*} " +
-				regexp.QuoteMeta("LEFT JOIN json_each(CASE WHEN json_valid([[__auth_users.rel]]) THEN [[__auth_users.rel]] ELSE json_array([[__auth_users.rel]]) END) `__auth_users_rel_je` LEFT JOIN `demo2` `__auth_users_rel` ON [[__auth_users_rel.id]] = [[__auth_users_rel_je.value]]") +
+				regexp.QuoteMeta("SELECT DISTINCT `demo4`.* FROM `demo4`") +
+				regexp.QuoteMeta(" LEFT JOIN `users` `__auth_users` ON [[__auth_users.id]] = {:") +
+				".+" +
+				regexp.QuoteMeta("} LEFT JOIN json_each(CASE WHEN json_valid([[__auth_users.rel]]) THEN [[__auth_users.rel]] ELSE json_array([[__auth_users.rel]]) END) `__auth_users_rel_je`") +
+				regexp.QuoteMeta(" LEFT JOIN `demo2` `__auth_users_rel` ON [[__auth_users_rel.id]] = [[__auth_users_rel_je.value]]") +
+				regexp.QuoteMeta(" WHERE ({:") +
+				".+" +
+				regexp.QuoteMeta("} > 1 OR {:") +
+				".+" +
+				regexp.QuoteMeta("} > 1 OR [[__auth_users_rel.title]] > 1 OR NULL > 1)") +
 				"$",
 		},
 		{
@@ -124,46 +135,94 @@ func TestRecordFieldResolverUpdateQuery(t *testing.T) {
 			"demo4",
 			[]string{"@collection.users.email", "@request.auth.email"},
 			false,
-			"SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN `users` `__collection_users`",
+			"^" +
+				regexp.QuoteMeta("SELECT DISTINCT `demo4`.* FROM `demo4` LEFT JOIN `users` `__collection_users` WHERE ([[__collection_users.email]] > 1 OR {:") +
+				".+" +
+				regexp.QuoteMeta("} > 1)") +
+				"$",
 		},
 		{
 			"hidden field (add emailVisibility)",
 			"users",
 			[]string{"email"},
 			false,
-			"SELECT `users`.* FROM `users` WHERE [[users.emailVisibility]] = TRUE",
+			"SELECT `users`.* FROM `users` WHERE (([[users.email]] > 1) AND ([[users.emailVisibility]] = TRUE))",
 		},
 		{
 			"hidden field (force ignore emailVisibility)",
 			"users",
 			[]string{"email"},
 			true,
-			"SELECT `users`.* FROM `users`",
+			"SELECT `users`.* FROM `users` WHERE [[users.email]] > 1",
+		},
+		{
+			"isset key",
+			"demo1",
+			[]string{
+				"@request.data.a.isset",
+				"@request.data.b.isset",
+				"@request.data.c.isset",
+				"@request.query.a.isset",
+				"@request.query.b.isset",
+				"@request.query.c.isset",
+			},
+			false,
+			"SELECT `demo1`.* FROM `demo1` WHERE (TRUE > 1 OR TRUE > 1 OR FALSE > 1 OR TRUE > 1 OR TRUE > 1 OR FALSE > 1)",
+		},
+		{
+			"@request.data.rel.* fields",
+			"demo1",
+			[]string{
+				"@request.data.rel_one",
+				"@request.data.rel_one.text",
+				"@request.data.rel_many",
+				"@request.data.rel_many.email",
+			},
+			false,
+			"^" +
+				regexp.QuoteMeta("SELECT DISTINCT `demo1`.* FROM `demo1`") +
+				regexp.QuoteMeta(" LEFT JOIN `demo1` `__data_demo1` ON [[__data_demo1.id]]={:p0}") +
+				regexp.QuoteMeta(" LEFT JOIN `users` `__data_users` ON [[__data_users.id]] IN ({:p1}, {:p2})") +
+				regexp.QuoteMeta(" WHERE ({:") +
+				".+" +
+				regexp.QuoteMeta("} > 1 OR [[__data_demo1.text]] > 1 OR {:") +
+				".+" +
+				regexp.QuoteMeta("} > 1 OR [[__data_users.email]] > 1)") +
+				"$",
 		},
 	}
 
 	for _, s := range scenarios {
 		collection, err := app.Dao().FindCollectionByNameOrId(s.collectionIdOrName)
 		if err != nil {
-			t.Errorf("[%s] Failed to load collection %s: %v", s.name, s.collectionIdOrName, err)
+			t.Fatalf("[%s] Failed to load collection %s: %v", s.name, s.collectionIdOrName, err)
 		}
 
 		query := app.Dao().RecordQuery(collection)
 
 		r := resolvers.NewRecordFieldResolver(app.Dao(), collection, requestData, s.allowHiddenFields)
-		for _, field := range s.fields {
-			r.Resolve(field)
+
+		var dummyData string
+		for _, f := range s.fields {
+			if dummyData != "" {
+				dummyData += "||"
+			}
+			dummyData += f + " > true"
+		}
+
+		expr, err := search.FilterData(dummyData).BuildExpr(r)
+		if err != nil {
+			t.Fatalf("[%s] BuildExpr failed with error %v", s.name, err)
 		}
 
 		if err := r.UpdateQuery(query); err != nil {
-			t.Errorf("[%s] UpdateQuery failed with error %v", s.name, err)
-			continue
+			t.Fatalf("[%s] UpdateQuery failed with error %v", s.name, err)
 		}
 
-		rawQuery := query.Build().SQL()
+		rawQuery := query.AndWhere(expr).Build().SQL()
 
 		if !list.ExistInSliceWithRegex(rawQuery, []string{s.expectQuery}) {
-			t.Errorf("[%s] Expected query\n %v \ngot:\n %v", s.name, s.expectQuery, rawQuery)
+			t.Fatalf("[%s] Expected query\n %v \ngot:\n %v", s.name, s.expectQuery, rawQuery)
 		}
 	}
 }
