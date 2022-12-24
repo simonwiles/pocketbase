@@ -57,7 +57,7 @@ func nullStringMapValue(data dbx.NullStringMap, key string) any {
 // NewRecordFromNullStringMap initializes a single new Record model
 // with data loaded from the provided NullStringMap.
 func NewRecordFromNullStringMap(collection *Collection, data dbx.NullStringMap) *Record {
-	resultMap := map[string]any{}
+	resultMap := make(map[string]any, len(data))
 
 	// load schema fields
 	for _, field := range collection.Schema.Fields() {
@@ -140,7 +140,7 @@ func (m *Record) SetExpand(expand map[string]any) {
 // Otherwise the "old" expanded record will be replace with the "new" one (aka. a :merge: aNew => aNew).
 func (m *Record) MergeExpand(expand map[string]any) {
 	if m.expand == nil && len(expand) > 0 {
-		m.expand = make(map[string]any)
+		m.expand = make(map[string]any, len(expand))
 	}
 
 	for key, new := range expand {
@@ -194,7 +194,7 @@ func (m *Record) MergeExpand(expand map[string]any) {
 			}
 		}
 
-		if wasOldSlice || wasNewSlice {
+		if wasOldSlice || wasNewSlice || len(oldSlice) == 0 {
 			m.expand[key] = oldSlice
 		} else {
 			m.expand[key] = oldSlice[0]
@@ -204,7 +204,7 @@ func (m *Record) MergeExpand(expand map[string]any) {
 
 // SchemaData returns a shallow copy ONLY of the defined record schema fields data.
 func (m *Record) SchemaData() map[string]any {
-	result := map[string]any{}
+	result := make(map[string]any, len(m.collection.Schema.Fields()))
 
 	for _, field := range m.collection.Schema.Fields() {
 		if v, ok := m.data[field.Name]; ok {
@@ -370,7 +370,7 @@ func (m *Record) Load(data map[string]any) {
 
 // ColumnValueMap implements [ColumnValueMapper] interface.
 func (m *Record) ColumnValueMap() map[string]any {
-	result := map[string]any{}
+	result := make(map[string]any, len(m.collection.Schema.Fields())+3)
 
 	// export schema field values
 	for _, field := range m.collection.Schema.Fields() {
@@ -396,7 +396,7 @@ func (m *Record) ColumnValueMap() map[string]any {
 //
 // Fields marked as hidden will be exported only if `m.IgnoreEmailVisibility(true)` is set.
 func (m *Record) PublicExport() map[string]any {
-	result := map[string]any{}
+	result := make(map[string]any, len(m.collection.Schema.Fields())+5)
 
 	// export unknown data fields if allowed
 	if m.exportUnknown {
