@@ -95,12 +95,12 @@ func (api *settingsApi) testS3(c echo.Context) error {
 	testPrefix := "pb_settings_test_" + security.PseudorandomString(5)
 	testFileKey := testPrefix + "/test.txt"
 
-	// try to upload the test file
+	// try to upload a test file
 	if err := fs.Upload([]byte("test"), testFileKey); err != nil {
 		return NewBadRequestError("Failed to upload a test file. Raw error: \n"+err.Error(), nil)
 	}
 
-	// test prefix deletion (ensures that both buckets list and delete works)
+	// test prefix deletion (ensures that both bucket list and delete works)
 	if errs := fs.DeletePrefix(testPrefix); len(errs) > 0 {
 		return NewBadRequestError(fmt.Sprintf("Failed to delete a test file. Raw error: %v", errs), nil)
 	}
