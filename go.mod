@@ -4,14 +4,14 @@ go 1.18
 
 require (
 	github.com/AlecAivazis/survey/v2 v2.3.6
-	github.com/aws/aws-sdk-go v1.44.165
+	github.com/aws/aws-sdk-go v1.44.167
 	github.com/disintegration/imaging v1.6.2
 	github.com/domodwyer/mailyak/v3 v3.3.4
 	github.com/dop251/goja v0.0.0-20221118162653-d4bf6fde1b86
 	github.com/dop251/goja_nodejs v0.0.0-20221009164102-3aa5028e57f6
 	github.com/fatih/color v1.13.0
 	github.com/gabriel-vasile/mimetype v1.4.1
-	github.com/ganigeorgiev/fexpr v0.1.1
+	github.com/ganigeorgiev/fexpr v0.2.0
 	github.com/go-ozzo/ozzo-validation/v4 v4.3.0
 	github.com/golang-jwt/jwt/v4 v4.4.3
 	github.com/labstack/echo/v5 v5.0.0-20220201181537-ed2888cfa198

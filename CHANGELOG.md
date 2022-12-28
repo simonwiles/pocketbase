@@ -1,6 +1,12 @@
 ## (WIP)
 
 - Added IME status check to the textarea keydown handler ([#1370](https://github.com/pocketbase/pocketbase/pull/1370); thanks @tenthree).
+- Additional list-bucket check in the S3 config test API
+- Added `@request.data.*.isset` modifier
+- Added `@request.data.someRelField.FieldA.FieldB` support
+- Added `@request.data.someSelect.item` modifier
+- Added select field `.item` modifier
+- Added multi-match rel support for all operators
 
 
 ## v0.10.4

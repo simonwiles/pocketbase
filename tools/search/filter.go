@@ -16,6 +16,7 @@ import (
 // FilterData is a filter expression string following the `fexpr` package grammar.
 //
 // Example:
+//
 //	var filter FilterData = "id = null || (name = 'test' && status = true)"
 //	resolver := search.NewSimpleFieldResolver("id", "name", "status")
 //	expr, err := filter.BuildExpr(resolver)
@@ -94,55 +95,88 @@ func (f FilterData) resolveTokenizedExpr(expr fexpr.Expr, fieldResolver FieldRes
 		return nil, fmt.Errorf("invalid right operand %q - %v", expr.Right.Literal, rErr)
 	}
 
-	resolved, err := f.buildExpr(lResult, expr.Op, rResult)
-	if err != nil {
-		return nil, err
-	}
-
-	if lResult.AdditionalExpr != nil {
-		resolved = dbx.And(resolved, lResult.AdditionalExpr)
-	}
-
-	if rResult.AdditionalExpr != nil {
-		resolved = dbx.And(resolved, rResult.AdditionalExpr)
-	}
-
-	return resolved, nil
+	return buildExpr(lResult, expr.Op, rResult)
 }
 
-func (f FilterData) buildExpr(
+func buildExpr(
 	left *ResolverResult,
 	op fexpr.SignOp,
 	right *ResolverResult,
 ) (dbx.Expression, error) {
+	var expr dbx.Expression
+
 	switch op {
-	case fexpr.SignEq:
-		return dbx.NewExp(fmt.Sprintf("COALESCE(%s, '') = COALESCE(%s, '')", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params)), nil
-	case fexpr.SignNeq:
-		return dbx.NewExp(fmt.Sprintf("COALESCE(%s, '') != COALESCE(%s, '')", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params)), nil
-	case fexpr.SignLike:
+	case fexpr.SignEq, fexpr.SignAnyEq:
+		expr = dbx.NewExp(fmt.Sprintf("COALESCE(%s, '') = COALESCE(%s, '')", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params))
+	case fexpr.SignNeq, fexpr.SignAnyNeq:
+		expr = dbx.NewExp(fmt.Sprintf("COALESCE(%s, '') != COALESCE(%s, '')", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params))
+	case fexpr.SignLike, fexpr.SignAnyLike:
 		// the right side is a column and therefor wrap it with "%" for contains like behavior
 		if len(right.Params) == 0 {
-			return dbx.NewExp(fmt.Sprintf("%s LIKE ('%%' || %s || '%%') ESCAPE '\\'", left.Identifier, right.Identifier), left.Params), nil
+			expr = dbx.NewExp(fmt.Sprintf("%s LIKE ('%%' || %s || '%%') ESCAPE '\\'", left.Identifier, right.Identifier), left.Params)
+		} else {
+			expr = dbx.NewExp(fmt.Sprintf("%s LIKE %s ESCAPE '\\'", left.Identifier, right.Identifier), mergeParams(left.Params, wrapLikeParams(right.Params)))
 		}
-		return dbx.NewExp(fmt.Sprintf("%s LIKE %s ESCAPE '\\'", left.Identifier, right.Identifier), mergeParams(left.Params, wrapLikeParams(right.Params))), nil
-	case fexpr.SignNlike:
+	case fexpr.SignNlike, fexpr.SignAnyNlike:
 		// the right side is a column and therefor wrap it with "%" for not-contains like behavior
 		if len(right.Params) == 0 {
-			return dbx.NewExp(fmt.Sprintf("%s NOT LIKE ('%%' || %s || '%%') ESCAPE '\\'", left.Identifier, right.Identifier), left.Params), nil
+			expr = dbx.NewExp(fmt.Sprintf("%s NOT LIKE ('%%' || %s || '%%') ESCAPE '\\'", left.Identifier, right.Identifier), left.Params)
+		} else {
+			expr = dbx.NewExp(fmt.Sprintf("%s NOT LIKE %s ESCAPE '\\'", left.Identifier, right.Identifier), mergeParams(left.Params, wrapLikeParams(right.Params)))
 		}
-		return dbx.NewExp(fmt.Sprintf("%s NOT LIKE %s ESCAPE '\\'", left.Identifier, right.Identifier), mergeParams(left.Params, wrapLikeParams(right.Params))), nil
-	case fexpr.SignLt:
-		return dbx.NewExp(fmt.Sprintf("%s < %s", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params)), nil
-	case fexpr.SignLte:
-		return dbx.NewExp(fmt.Sprintf("%s <= %s", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params)), nil
-	case fexpr.SignGt:
-		return dbx.NewExp(fmt.Sprintf("%s > %s", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params)), nil
-	case fexpr.SignGte:
-		return dbx.NewExp(fmt.Sprintf("%s >= %s", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params)), nil
+	case fexpr.SignLt, fexpr.SignAnyLt:
+		expr = dbx.NewExp(fmt.Sprintf("%s < %s", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params))
+	case fexpr.SignLte, fexpr.SignAnyLte:
+		expr = dbx.NewExp(fmt.Sprintf("%s <= %s", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params))
+	case fexpr.SignGt, fexpr.SignAnyGt:
+		expr = dbx.NewExp(fmt.Sprintf("%s > %s", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params))
+	case fexpr.SignGte, fexpr.SignAnyGte:
+		expr = dbx.NewExp(fmt.Sprintf("%s >= %s", left.Identifier, right.Identifier), mergeParams(left.Params, right.Params))
 	}
 
-	return nil, fmt.Errorf("unknown expression operator %q", op)
+	if expr == nil {
+		return nil, fmt.Errorf("unknown expression operator %q", op)
+	}
+
+	// multi-match expressions
+	if !isAnyMatchOp(op) {
+		if left.MultiMatchSubQuery != nil && right.MultiMatchSubQuery != nil {
+			mm := &manyVsManyExpr{
+				leftSubQuery:  left.MultiMatchSubQuery,
+				rightSubQuery: right.MultiMatchSubQuery,
+				op:            op,
+			}
+
+			expr = dbx.And(expr, mm)
+		} else if left.MultiMatchSubQuery != nil {
+			mm := &manyVsOneExpr{
+				subQuery:     left.MultiMatchSubQuery,
+				op:           op,
+				otherOperand: right,
+			}
+
+			expr = dbx.And(expr, mm)
+		} else if right.MultiMatchSubQuery != nil {
+			mm := &manyVsOneExpr{
+				subQuery:     right.MultiMatchSubQuery,
+				op:           op,
+				otherOperand: left,
+				inverse:      true,
+			}
+
+			expr = dbx.And(expr, mm)
+		}
+	}
+
+	if left.AfterBuild != nil {
+		expr = left.AfterBuild(expr)
+	}
+
+	if right.AfterBuild != nil {
+		expr = right.AfterBuild(expr)
+	}
+
+	return expr, nil
 }
 
 func resolveToken(token fexpr.Token, fieldResolver FieldResolver) (*ResolverResult, error) {
@@ -151,7 +185,7 @@ func resolveToken(token fexpr.Token, fieldResolver FieldResolver) (*ResolverResu
 		// current datetime constant
 		// ---
 		if token.Literal == "@now" {
-			placeholder := "t" + security.PseudorandomString(8)
+			placeholder := "t" + security.PseudorandomString(6)
 
 			return &ResolverResult{
 				Identifier: "{:" + placeholder + "}",
@@ -180,14 +214,14 @@ func resolveToken(token fexpr.Token, fieldResolver FieldResolver) (*ResolverResu
 
 		return result, err
 	case fexpr.TokenText:
-		placeholder := "t" + security.PseudorandomString(8)
+		placeholder := "t" + security.PseudorandomString(6)
 
 		return &ResolverResult{
 			Identifier: "{:" + placeholder + "}",
 			Params:     dbx.Params{placeholder: token.Literal},
 		}, nil
 	case fexpr.TokenNumber:
-		placeholder := "t" + security.PseudorandomString(8)
+		placeholder := "t" + security.PseudorandomString(6)
 
 		return &ResolverResult{
 			Identifier: "{:" + placeholder + "}",
@@ -196,6 +230,23 @@ func resolveToken(token fexpr.Token, fieldResolver FieldResolver) (*ResolverResu
 	}
 
 	return nil, errors.New("unresolvable token type")
+}
+
+func isAnyMatchOp(op fexpr.SignOp) bool {
+	switch op {
+	case
+		fexpr.SignAnyEq,
+		fexpr.SignAnyNeq,
+		fexpr.SignAnyLike,
+		fexpr.SignAnyNlike,
+		fexpr.SignAnyLt,
+		fexpr.SignAnyLte,
+		fexpr.SignAnyGt,
+		fexpr.SignAnyGte:
+		return true
+	}
+
+	return false
 }
 
 // mergeParams returns new dbx.Params where each provided params item
@@ -233,17 +284,23 @@ func wrapLikeParams(params dbx.Params) dbx.Params {
 
 // -------------------------------------------------------------------
 
+var _ dbx.Expression = (*opExpr)(nil)
+
 // opExpr defines an expression that contains a raw sql operator string.
 type opExpr struct {
 	op string
 }
 
-// Build converts an expression into a SQL fragment.
+// Build converts the expression into a SQL fragment.
 //
 // Implements [dbx.Expression] interface.
 func (e *opExpr) Build(db *dbx.DB, params dbx.Params) string {
 	return e.op
 }
+
+// -------------------------------------------------------------------
+
+var _ dbx.Expression = (*concatExpr)(nil)
 
 // concatExpr defines an expression that concatenates multiple
 // other expressions with a specified separator.
@@ -252,7 +309,7 @@ type concatExpr struct {
 	separator string
 }
 
-// Build converts an expression into a SQL fragment.
+// Build converts the expression into a SQL fragment.
 //
 // Implements [dbx.Expression] interface.
 func (e *concatExpr) Build(db *dbx.DB, params dbx.Params) string {
@@ -281,4 +338,137 @@ func (e *concatExpr) Build(db *dbx.DB, params dbx.Params) string {
 	}
 
 	return "(" + strings.Join(stringParts, e.separator) + ")"
+}
+
+// -------------------------------------------------------------------
+
+var _ dbx.Expression = (*manyVsManyExpr)(nil)
+
+// manyVsManyExpr constructs a multi-match many<->many db where expression.
+//
+// Expects leftSubQuery and rightSubQuery to return a subquery with a
+// single "multiMatchValue" column.
+type manyVsManyExpr struct {
+	leftSubQuery  dbx.Expression
+	rightSubQuery dbx.Expression
+	op            fexpr.SignOp
+}
+
+// Build converts the expression into a SQL fragment.
+//
+// Implements [dbx.Expression] interface.
+func (e *manyVsManyExpr) Build(db *dbx.DB, params dbx.Params) string {
+	if e.leftSubQuery == nil || e.rightSubQuery == nil {
+		return "0=1"
+	}
+
+	lAlias := "__ml" + security.PseudorandomString(4)
+	rAlias := "__mr" + security.PseudorandomString(4)
+
+	whereExpr, buildErr := buildExpr(
+		&ResolverResult{
+			Identifier: "[[" + lAlias + ".multiMatchValue]]",
+		},
+		e.op,
+		&ResolverResult{
+			Identifier: "[[" + rAlias + ".multiMatchValue]]",
+			// note: the AfterBuild needs to be handled only once and it
+			// doesn't matter whether it is applied on the left or right subquery operand
+			AfterBuild: func(expr dbx.Expression) dbx.Expression {
+				expr = dbx.Not(expr) // inverse the base expression
+
+				if e.op == fexpr.SignEq || e.op == fexpr.SignNeq {
+					return expr
+				}
+
+				// add "IS NULL" condition in case of like or numeric comparison
+				// (gt, gte, lt, lte) to handle the "empty" multi-match rows
+				return dbx.Or(
+					expr,
+					dbx.NewExp("[["+lAlias+".multiMatchValue]] IS NULL"),
+					dbx.NewExp("[["+rAlias+".multiMatchValue]] IS NULL"),
+				)
+			},
+		},
+	)
+
+	if buildErr != nil {
+		return "0=1"
+	}
+
+	return fmt.Sprintf(
+		"NOT EXISTS (SELECT 1 FROM (%s) {{%s}} LEFT JOIN (%s) [[%s]] WHERE %s)",
+		e.leftSubQuery.Build(db, params),
+		lAlias,
+		e.rightSubQuery.Build(db, params),
+		rAlias,
+		whereExpr.Build(db, params),
+	)
+}
+
+// -------------------------------------------------------------------
+
+var _ dbx.Expression = (*manyVsOneExpr)(nil)
+
+// manyVsManyExpr constructs a multi-match many<->one db where expression.
+//
+// Expects subQuery to return a subquery with a single "multiMatchValue" column.
+//
+// You can set inverse=false to reverse the condition sides (aka. one<->many).
+type manyVsOneExpr struct {
+	subQuery     dbx.Expression
+	op           fexpr.SignOp
+	otherOperand *ResolverResult
+	inverse      bool
+}
+
+// Build converts the expression into a SQL fragment.
+//
+// Implements [dbx.Expression] interface.
+func (e *manyVsOneExpr) Build(db *dbx.DB, params dbx.Params) string {
+	if e.subQuery == nil {
+		return "0=1"
+	}
+
+	alias := "__sm" + security.PseudorandomString(4)
+
+	r1 := &ResolverResult{
+		Identifier: "[[" + alias + ".multiMatchValue]]",
+		AfterBuild: func(expr dbx.Expression) dbx.Expression {
+			expr = dbx.Not(expr) // inverse for the not-exist expression
+
+			if e.op == fexpr.SignEq || e.op == fexpr.SignNeq {
+				return expr
+			}
+
+			// add "IS NULL" condition in case of like or numeric comparison
+			// (gt, gte, lt, lte) to handle the "empty" multi-match rows
+			return dbx.Or(expr, dbx.NewExp("[["+alias+".multiMatchValue]] IS NULL"))
+		},
+	}
+
+	r2 := &ResolverResult{
+		Identifier: e.otherOperand.Identifier,
+		Params:     e.otherOperand.Params,
+	}
+
+	var whereExpr dbx.Expression
+	var buildErr error
+
+	if e.inverse {
+		whereExpr, buildErr = buildExpr(r2, e.op, r1)
+	} else {
+		whereExpr, buildErr = buildExpr(r1, e.op, r2)
+	}
+
+	if buildErr != nil {
+		return "0=1"
+	}
+
+	return fmt.Sprintf(
+		"NOT EXISTS (SELECT 1 FROM (%s) {{%s}} WHERE %s)",
+		e.subQuery.Build(db, params),
+		alias,
+		whereExpr.Build(db, params),
+	)
 }

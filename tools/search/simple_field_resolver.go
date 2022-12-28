@@ -10,10 +10,21 @@ import (
 
 // ResolverResult defines a single FieldResolver.Resolve() successfully parsed result.
 type ResolverResult struct {
-	Identifier     string
-	Params         dbx.Params
-	MultiMatch     bool
-	AdditionalExpr dbx.Expression
+	// Identifier is the plain SQL identifier/column that will be used
+	// in the final db expression as left or right operand.
+	Identifier string
+
+	// Params is a map with db placeholder->value pairs that will be added
+	// to the query when building both resolved operands/sides in a single expression.
+	Params dbx.Params
+
+	// MultiMatchSubQuery is an optional sub query expression that will be added
+	// in addition to the combined ResolverResult expression during build.
+	MultiMatchSubQuery dbx.Expression
+
+	// AfterBuild is an optional function that will be called after building
+	// and combining the result of both resolved operands/sides in a single expression.
+	AfterBuild func(expr dbx.Expression) dbx.Expression
 }
 
 // FieldResolver defines an interface for managing search fields.

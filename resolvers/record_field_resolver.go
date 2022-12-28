@@ -17,6 +17,11 @@ import (
 	"github.com/spf13/cast"
 )
 
+const (
+	selectEachModifier = "each"
+	issetModifier      = "isset"
+)
+
 // ensure that `search.FieldResolver` interface is implemented
 var _ search.FieldResolver = (*RecordFieldResolver)(nil)
 
@@ -32,12 +37,6 @@ var plainRequestAuthFields = []string{
 	"@request.auth." + schema.FieldNameVerified,
 	"@request.auth." + schema.FieldNameCreated,
 	"@request.auth." + schema.FieldNameUpdated,
-}
-
-type join struct {
-	id    string
-	table string
-	on    dbx.Expression
 }
 
 // RecordFieldResolver defines a custom search resolver struct for
@@ -58,7 +57,7 @@ type RecordFieldResolver struct {
 	allowHiddenFields bool
 	allowedFields     []string
 	loadedCollections []*models.Collection
-	joins             []join // we cannot use a map because the insertion order is not preserved
+	joins             []*join // we cannot use a map because the insertion order is not preserved
 	requestData       *models.RequestData
 	staticRequestData map[string]any
 }
@@ -75,7 +74,7 @@ func NewRecordFieldResolver(
 		baseCollection:    baseCollection,
 		requestData:       requestData,
 		allowHiddenFields: allowHiddenFields,
-		joins:             []join{},
+		joins:             []*join{},
 		loadedCollections: []*models.Collection{baseCollection},
 		allowedFields: []string{
 			`^\w+[\w\.]*$`,
@@ -87,7 +86,6 @@ func NewRecordFieldResolver(
 		},
 	}
 
-	// @todo remove after IN operator and multi-match filter enhancements
 	r.staticRequestData = map[string]any{}
 	if r.requestData != nil {
 		r.staticRequestData["method"] = r.requestData.Method
@@ -113,7 +111,10 @@ func (r *RecordFieldResolver) UpdateQuery(query *dbx.SelectQuery) error {
 		query.Distinct(true)
 
 		for _, join := range r.joins {
-			query.LeftJoin(join.table, join.on)
+			query.LeftJoin(
+				(join.tableName + " " + join.tableAlias),
+				join.on,
+			)
 		}
 	}
 
@@ -123,14 +124,20 @@ func (r *RecordFieldResolver) UpdateQuery(query *dbx.SelectQuery) error {
 // Resolve implements `search.FieldResolver` interface.
 //
 // Example of resolvable field formats:
+//
 //	id
+//	someSelect.each
 //	project.screen.status
 //	@request.status
 //	@request.query.filter
 //	@request.auth.someRelation.name
 //	@request.data.someRelation.name
 //	@request.data.someField
+//	@request.data.someSelect.each
+//	@request.data.someField.isset
 //	@collection.product.name
+//
+// @todo convert a single Resolve execution into a separate struct with smaller logical chunks
 func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult, error) {
 	if len(r.allowedFields) > 0 && !list.ExistInSliceWithRegex(fieldName, r.allowedFields) {
 		return nil, fmt.Errorf("failed to resolve field %q", fieldName)
@@ -141,10 +148,20 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult,
 	currentCollectionName := r.baseCollection.Name
 	currentTableAlias := inflector.Columnify(currentCollectionName)
 
+	allowHiddenFields := r.allowHiddenFields
+
 	// flag indicating whether to return null on missing field or return on an error
 	nullifyMisingField := false
 
-	allowHiddenFields := r.allowHiddenFields
+	// prepare a multi-match subquery
+	mm := &multiMatchSubquery{
+		baseTableAlias: currentTableAlias,
+		params:         dbx.Params{},
+	}
+	mm.fromTableName = inflector.Columnify(currentCollectionName)
+	mm.fromTableAlias = "__mm_" + currentTableAlias
+	multiMatchCurrentTableAlias := mm.fromTableAlias
+	withMultiMatch := false
 
 	// check for @collection field (aka. non-relational join)
 	// must be in the format "@collection.COLLECTION_NAME.FIELD[.FIELD2....]"
@@ -153,18 +170,28 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult,
 			return nil, fmt.Errorf("invalid @collection field path in %q", fieldName)
 		}
 
-		currentCollectionName = props[1]
+		collection, err := r.loadCollection(props[1])
+		if err != nil {
+			return nil, fmt.Errorf("failed to load collection %q from field path %q", props[1], fieldName)
+		}
+
+		currentCollectionName = collection.Name
 		currentTableAlias = inflector.Columnify("__collection_" + currentCollectionName)
 
-		collection, err := r.loadCollection(currentCollectionName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to load collection %q from field path %q", currentCollectionName, fieldName)
-		}
+		withMultiMatch = true
 
 		// always allow hidden fields since the @collection.* filter is a system one
 		allowHiddenFields = true
 
+		// join the collection to the main query
 		r.registerJoin(inflector.Columnify(collection.Name), currentTableAlias, nil)
+
+		// join the collection to the multi-match subquery
+		multiMatchCurrentTableAlias = "__mm" + currentTableAlias
+		mm.joins = append(mm.joins, &join{
+			tableName:  inflector.Columnify(collection.Name),
+			tableAlias: multiMatchCurrentTableAlias,
+		})
 
 		// leave only the collection fields
 		// aka. @collection.someCollection.fieldA.fieldB -> fieldA.fieldB
@@ -185,11 +212,59 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult,
 		// compatibility and consistency with all @request.* filter fields and types
 		nullifyMisingField = true
 
-		// check for data relation fields
+		// check for data select and relation fields
 		if strings.HasPrefix(fieldName, "@request.data.") && len(props) > 3 {
 			dataRelField := r.baseCollection.Schema.GetFieldByName(props[2])
-			if dataRelField == nil ||
-				dataRelField.Type != schema.FieldTypeRelation {
+
+			// data select.each field
+			if dataRelField != nil && dataRelField.Type == schema.FieldTypeSelect && props[3] == selectEachModifier && len(props) == 4 {
+				dataItems := list.ToUniqueStringSlice(r.requestData.Data[props[2]])
+				rawJson, err := json.Marshal(dataItems)
+				if err != nil {
+					return nil, fmt.Errorf("cannot marshalize the data select item for field %q", props[2])
+				}
+
+				placeholder := "dataSelect" + security.PseudorandomString(4)
+				cleanFieldName := inflector.Columnify(props[2])
+				jeTable := fmt.Sprintf("json_each({:%s})", placeholder)
+				jeAlias := "__dataSelect_" + cleanFieldName + "_je"
+				r.registerJoin(jeTable, jeAlias, nil)
+
+				result := &search.ResolverResult{
+					Identifier: fmt.Sprintf("[[%s.value]]", jeAlias),
+					Params:     dbx.Params{placeholder: rawJson},
+				}
+
+				dataRelField.InitOptions()
+				options, ok := dataRelField.Options.(*schema.SelectOptions)
+				if !ok {
+					return nil, fmt.Errorf("failed to initialize field %q options", props[2])
+				}
+
+				if options.MaxSelect != 1 {
+					withMultiMatch = true
+				}
+
+				if withMultiMatch {
+					placeholder2 := "mm" + placeholder
+					jeTable2 := fmt.Sprintf("json_each({:%s})", placeholder2)
+					jeAlias2 := "__mm" + jeAlias
+
+					mm.joins = append(mm.joins, &join{
+						tableName:  jeTable2,
+						tableAlias: jeAlias2,
+					})
+					mm.params[placeholder2] = rawJson
+					mm.valueIdentifier = fmt.Sprintf("[[%s.value]]", jeAlias2)
+
+					result.MultiMatchSubQuery = mm
+				}
+
+				return result, nil
+			}
+
+			// fallback to the static resolver for empty and non-relational data fields
+			if dataRelField == nil || dataRelField.Type != schema.FieldTypeRelation {
 				return r.resolveStaticRequestField(props[1:]...)
 			}
 
@@ -204,7 +279,6 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult,
 				return nil, fmt.Errorf("failed to load collection %q from data field %q", dataRelFieldOptions.CollectionId, dataRelField.Name)
 			}
 
-			// @todo enable multi-match
 			var dataRelIds []string
 			if len(r.requestData.Data) != 0 {
 				dataRelIds = list.ToUniqueStringSlice(r.requestData.Data[dataRelField.Name])
@@ -216,17 +290,29 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult,
 			currentCollectionName = dataRelCollection.Name
 			currentTableAlias = inflector.Columnify("__data_" + dataRelCollection.Name)
 
-			// join the data rel collection
+			// join the data rel collection to the main collection
 			r.registerJoin(
 				inflector.Columnify(currentCollectionName),
 				currentTableAlias,
 				dbx.In(
-					fmt.Sprintf(
-						"[[%s.id]]",
-						inflector.Columnify(currentTableAlias),
-					),
+					fmt.Sprintf("[[%s.id]]", inflector.Columnify(currentTableAlias)),
 					list.ToInterfaceSlice(dataRelIds)...,
 				),
+			)
+
+			if dataRelFieldOptions.MaxSelect == nil || *dataRelFieldOptions.MaxSelect != 1 {
+				withMultiMatch = true
+			}
+
+			// join the data rel collection to the multi-match subquery
+			multiMatchCurrentTableAlias = inflector.Columnify("__data_mm_" + dataRelCollection.Name)
+			mm.joins = append(
+				mm.joins,
+				&join{
+					tableName:  inflector.Columnify(currentCollectionName),
+					tableAlias: multiMatchCurrentTableAlias,
+					on:         dbx.In(multiMatchCurrentTableAlias+".id", list.ToInterfaceSlice(dataRelIds)...),
+				},
 			)
 
 			// leave only the data relation fields
@@ -250,20 +336,27 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult,
 			currentCollectionName = collection.Name
 			currentTableAlias = "__auth_" + inflector.Columnify(currentCollectionName)
 
-			authIdParamKey := "auth" + security.PseudorandomString(5)
-			authIdParams := dbx.Params{authIdParamKey: r.requestData.AuthRecord.Id}
-			// ---
-
-			// join the auth collection
+			// join the auth collection to the main query
 			r.registerJoin(
-				inflector.Columnify(collection.Name),
+				inflector.Columnify(currentCollectionName),
 				currentTableAlias,
-				dbx.NewExp(fmt.Sprintf(
+				dbx.HashExp{
 					// aka. __auth_users.id = :userId
-					"[[%s.id]] = {:%s}",
-					inflector.Columnify(currentTableAlias),
-					authIdParamKey,
-				), authIdParams),
+					(currentTableAlias + ".id"): r.requestData.AuthRecord.Id,
+				},
+			)
+
+			// join the auth collection to the multi-match subquery
+			multiMatchCurrentTableAlias = "__mm_" + currentTableAlias
+			mm.joins = append(
+				mm.joins,
+				&join{
+					tableName:  inflector.Columnify(currentCollectionName),
+					tableAlias: multiMatchCurrentTableAlias,
+					on: dbx.HashExp{
+						(multiMatchCurrentTableAlias + ".id"): r.requestData.AuthRecord.Id,
+					},
+				},
 			)
 
 			// leave only the auth relation fields
@@ -292,18 +385,25 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult,
 		}
 
 		// internal model prop (always available but not part of the collection schema)
-		if list.ExistInSlice(prop, systemFieldNames) {
+		if i == totalProps-1 && list.ExistInSlice(prop, systemFieldNames) {
 			result := &search.ResolverResult{
 				Identifier: fmt.Sprintf("[[%s.%s]]", currentTableAlias, inflector.Columnify(prop)),
 			}
 
 			// allow querying only auth records with emails marked as public
 			if prop == schema.FieldNameEmail && !allowHiddenFields {
-				result.AdditionalExpr = dbx.NewExp(fmt.Sprintf(
-					"[[%s.%s]] = TRUE",
-					currentTableAlias,
-					schema.FieldNameEmailVisibility,
-				))
+				result.AfterBuild = func(expr dbx.Expression) dbx.Expression {
+					return dbx.And(expr, dbx.NewExp(fmt.Sprintf(
+						"[[%s.%s]] = TRUE",
+						currentTableAlias,
+						schema.FieldNameEmailVisibility,
+					)))
+				}
+			}
+
+			if withMultiMatch {
+				mm.valueIdentifier = fmt.Sprintf("[[%s.%s]]", multiMatchCurrentTableAlias, inflector.Columnify(prop))
+				result.MultiMatchSubQuery = mm
 			}
 
 			return result, nil
@@ -322,9 +422,59 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult,
 
 		// last prop
 		if i == totalProps-1 {
-			return &search.ResolverResult{
-				Identifier: fmt.Sprintf("[[%s.%s]]", currentTableAlias, inflector.Columnify(prop)),
-			}, nil
+			cleanFieldName := inflector.Columnify(prop)
+
+			result := &search.ResolverResult{
+				Identifier: fmt.Sprintf("[[%s.%s]]", currentTableAlias, cleanFieldName),
+			}
+
+			if withMultiMatch {
+				mm.valueIdentifier = fmt.Sprintf("[[%s.%s]]", multiMatchCurrentTableAlias, cleanFieldName)
+				result.MultiMatchSubQuery = mm
+			}
+
+			return result, nil
+		}
+
+		// check if it is a select ".each" field modifier
+		if field.Type == schema.FieldTypeSelect && props[i+1] == selectEachModifier && i+2 == totalProps {
+			cleanFieldName := inflector.Columnify(prop)
+			jePair := currentTableAlias + "." + cleanFieldName
+			jeAlias := currentTableAlias + "_" + cleanFieldName + "_je"
+			r.registerJoin(jsonEach(jePair), jeAlias, nil)
+
+			result := &search.ResolverResult{
+				Identifier: fmt.Sprintf("[[%s.value]]", jeAlias),
+			}
+
+			field.InitOptions()
+			options, ok := field.Options.(*schema.SelectOptions)
+			if !ok {
+				return nil, fmt.Errorf("failed to initialize field %q options", prop)
+			}
+
+			if options.MaxSelect != 1 {
+				withMultiMatch = true
+			}
+
+			if withMultiMatch {
+				jePair2 := multiMatchCurrentTableAlias + "." + cleanFieldName
+				jeAlias2 := multiMatchCurrentTableAlias + "_" + cleanFieldName + "_je"
+
+				mm.joins = append(
+					mm.joins,
+					&join{
+						tableName:  jsonEach(jePair2),
+						tableAlias: jeAlias2,
+					},
+				)
+
+				mm.valueIdentifier = fmt.Sprintf("[[%s.value]]", jeAlias2)
+
+				result.MultiMatchSubQuery = mm
+			}
+
+			return result, nil
 		}
 
 		// check if it is a json field
@@ -341,14 +491,27 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult,
 					jsonPath.WriteString(inflector.Columnify(p))
 				}
 			}
-			return &search.ResolverResult{
+
+			result := &search.ResolverResult{
 				Identifier: fmt.Sprintf(
 					"JSON_EXTRACT([[%s.%s]], '%s')",
 					currentTableAlias,
 					inflector.Columnify(prop),
 					jsonPath.String(),
 				),
-			}, nil
+			}
+
+			if withMultiMatch {
+				mm.valueIdentifier = fmt.Sprintf(
+					"JSON_EXTRACT([[%s.%s]], '%s')",
+					multiMatchCurrentTableAlias,
+					inflector.Columnify(prop),
+					jsonPath.String(),
+				)
+				result.MultiMatchSubQuery = mm
+			}
+
+			return result, nil
 		}
 
 		// check if it is a relation field
@@ -356,7 +519,7 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult,
 			return nil, fmt.Errorf("field %q is not a valid relation", prop)
 		}
 
-		// auto join the relation
+		// join the relation to the main query
 		// ---
 		field.InitOptions()
 		options, ok := field.Options.(*schema.RelationOptions)
@@ -373,33 +536,49 @@ func (r *RecordFieldResolver) Resolve(fieldName string) (*search.ResolverResult,
 		newCollectionName := relCollection.Name
 		newTableAlias := currentTableAlias + "_" + cleanFieldName
 
-		jeTable := currentTableAlias + "_" + cleanFieldName + "_je"
+		jeAlias := currentTableAlias + "_" + cleanFieldName + "_je"
 		jePair := currentTableAlias + "." + cleanFieldName
-
-		r.registerJoin(
-			fmt.Sprintf(
-				// note: the case is used to normalize value access for single and multiple relations.
-				`json_each(CASE WHEN json_valid([[%s]]) THEN [[%s]] ELSE json_array([[%s]]) END)`,
-				jePair, jePair, jePair,
-			),
-			jeTable,
-			nil,
-		)
+		r.registerJoin(jsonEach(jePair), jeAlias, nil)
 		r.registerJoin(
 			inflector.Columnify(newCollectionName),
 			newTableAlias,
-			dbx.NewExp(fmt.Sprintf("[[%s.id]] = [[%s.value]]", newTableAlias, jeTable)),
+			dbx.NewExp(fmt.Sprintf("[[%s.id]] = [[%s.value]]", newTableAlias, jeAlias)),
 		)
-
 		currentCollectionName = newCollectionName
 		currentTableAlias = newTableAlias
+		// ---
+
+		// join the relation to the multi-match subquery
+		// ---
+		if options.MaxSelect == nil || *options.MaxSelect != 1 {
+			withMultiMatch = true
+		}
+
+		newTableAlias2 := multiMatchCurrentTableAlias + "_" + cleanFieldName
+		jeAlias2 := multiMatchCurrentTableAlias + "_" + cleanFieldName + "_je"
+		jePair2 := multiMatchCurrentTableAlias + "." + cleanFieldName
+		multiMatchCurrentTableAlias = newTableAlias2
+
+		mm.joins = append(
+			mm.joins,
+			&join{
+				tableName:  jsonEach(jePair2),
+				tableAlias: jeAlias2,
+			},
+			&join{
+				tableName:  inflector.Columnify(newCollectionName),
+				tableAlias: newTableAlias2,
+				on:         dbx.NewExp(fmt.Sprintf("[[%s.id]] = [[%s.value]]", newTableAlias2, jeAlias2)),
+			},
+		)
+		// ---
 	}
 
 	return nil, fmt.Errorf("failed to resolve field %q", fieldName)
 }
 
 func (r *RecordFieldResolver) resolveStaticRequestField(path ...string) (*search.ResolverResult, error) {
-	hasIssetSuffix := len(path) > 0 && path[len(path)-1] == "isset"
+	hasIssetSuffix := len(path) > 0 && path[len(path)-1] == issetModifier
 	if hasIssetSuffix {
 		path = path[:len(path)-1]
 	}
@@ -445,6 +624,51 @@ func (r *RecordFieldResolver) resolveStaticRequestField(path ...string) (*search
 	}, nil
 }
 
+func (r *RecordFieldResolver) loadCollection(collectionNameOrId string) (*models.Collection, error) {
+	// return already loaded
+	for _, collection := range r.loadedCollections {
+		if collection.Id == collectionNameOrId || strings.EqualFold(collection.Name, collectionNameOrId) {
+			return collection, nil
+		}
+	}
+
+	// load collection
+	collection, err := r.dao.FindCollectionByNameOrId(collectionNameOrId)
+	if err != nil {
+		return nil, err
+	}
+	r.loadedCollections = append(r.loadedCollections, collection)
+
+	return collection, nil
+}
+
+func (r *RecordFieldResolver) registerJoin(tableName string, tableAlias string, on dbx.Expression) {
+	join := &join{
+		tableName:  tableName,
+		tableAlias: tableAlias,
+		on:         on,
+	}
+
+	// replace existing join
+	for i, j := range r.joins {
+		if j.tableAlias == join.tableAlias {
+			r.joins[i] = join
+			return
+		}
+	}
+
+	// register new join
+	r.joins = append(r.joins, join)
+}
+
+func jsonEach(tableColumnPair string) string {
+	return fmt.Sprintf(
+		// note: the case is used to normalize value access for single and multiple relations.
+		`json_each(CASE WHEN json_valid([[%s]]) THEN [[%s]] ELSE json_array([[%s]]) END)`,
+		tableColumnPair, tableColumnPair, tableColumnPair,
+	)
+}
+
 func extractNestedMapVal(m map[string]any, keys ...string) (result any, err error) {
 	var ok bool
 
@@ -466,43 +690,4 @@ func extractNestedMapVal(m map[string]any, keys ...string) (result any, err erro
 	}
 
 	return extractNestedMapVal(m, keys[1:]...)
-}
-
-func (r *RecordFieldResolver) loadCollection(collectionNameOrId string) (*models.Collection, error) {
-	// return already loaded
-	for _, collection := range r.loadedCollections {
-		if collection.Id == collectionNameOrId || strings.EqualFold(collection.Name, collectionNameOrId) {
-			return collection, nil
-		}
-	}
-
-	// load collection
-	collection, err := r.dao.FindCollectionByNameOrId(collectionNameOrId)
-	if err != nil {
-		return nil, err
-	}
-	r.loadedCollections = append(r.loadedCollections, collection)
-
-	return collection, nil
-}
-
-func (r *RecordFieldResolver) registerJoin(tableName string, tableAlias string, on dbx.Expression) {
-	tableExpr := (tableName + " " + tableAlias)
-
-	join := join{
-		id:    tableAlias,
-		table: tableExpr,
-		on:    on,
-	}
-
-	// replace existing join
-	for i, j := range r.joins {
-		if j.id == join.id {
-			r.joins[i] = join
-			return
-		}
-	}
-
-	// register new join
-	r.joins = append(r.joins, join)
 }
