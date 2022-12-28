@@ -8,6 +8,8 @@
 - Added select field `.item` modifier
 - Added multi-match rel support for all operators
 
+- Fixed the text wrapping in the Admin UI listing searchbar ([#1416](https://github.com/pocketbase/pocketbase/issues/1416)).
+
 
 ## v0.10.4
 
