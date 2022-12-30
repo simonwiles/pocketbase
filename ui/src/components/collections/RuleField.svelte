@@ -4,7 +4,6 @@
 
 <script>
     import { tick } from "svelte";
-    import tooltip from "@/actions/tooltip";
     import Field from "@/components/base/Field.svelte";
 
     export let collection = null;
@@ -59,10 +58,10 @@
         let:uniqueId
     >
         <label for={uniqueId}>
-            <span class="txt">{label}</span>
+            <span class="txt">{label} - {isAdminOnly ? "Admins only" : "Custom rule"}</span>
 
             {#if isAdminOnly}
-                <button type="button" class="lock-toggle link-primary" on:click={unlock}>
+                <button type="button" class="lock-toggle link-success" on:click={unlock}>
                     <i class="ri-lock-unlock-line" />
                     <span class="txt">Set custom rule</span>
                 </button>
@@ -79,7 +78,6 @@
             id={uniqueId}
             bind:this={editorRef}
             bind:value={rule}
-            placeholder={isAdminOnly ? "Admins only" : ""}
             baseCollection={collection}
             disabled={isAdminOnly}
         />
@@ -90,9 +88,9 @@
                     {#if isAdminOnly}
                         Only admins will be able to perform this action (
                         <button type="button" class="link-hint" on:click={unlock}>unlock to change</button>
-                        )
+                        ).
                     {:else}
-                        Leave empty to grant everyone access
+                        Leave empty to grant everyone access.
                     {/if}
                 </p>
             </slot>
