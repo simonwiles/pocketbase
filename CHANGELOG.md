@@ -1,16 +1,26 @@
 ## (WIP)
 
 - Added IME status check to the textarea keydown handler ([#1370](https://github.com/pocketbase/pocketbase/pull/1370); thanks @tenthree).
-- Additional list-bucket check in the S3 config test API
-- Added `@request.data.*.isset` modifier
-- Added `@request.data.someRelField.FieldA.FieldB` support
-- Added `@request.data.someSelect.item` modifier
-- Added select field `.item` modifier
-- Added multi-match rel support for all operators
 
 - Fixed the text wrapping in the Admin UI listing searchbar ([#1416](https://github.com/pocketbase/pocketbase/issues/1416)).
 
 - Added `filesystem.NewFileFromBytes()` helper ([#1420](https://github.com/pocketbase/pocketbase/pull/1420); thanks @dschissler).
+
+- Added additional list-bucket check in the S3 config test API.
+
+- Added `@request.data.*.isset` modifier.
+
+- Added `.each` modifier support for the multi-`select` type field.
+
+- Added support to check relation fields via the `@request.data.someRelField.FieldA.FieldB` filter.
+
+- Added multi-match rel support for all operators (@todo add docs).
+
+- Improved the filters autocomple.
+
+- Simplified the API rules UI.
+
+- Other minor improvements.
 
 
 ## v0.10.4

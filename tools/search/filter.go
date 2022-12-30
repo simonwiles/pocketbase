@@ -344,6 +344,8 @@ func (e *concatExpr) Build(db *dbx.DB, params dbx.Params) string {
 
 var _ dbx.Expression = (*manyVsManyExpr)(nil)
 
+// @todo consider merging with manyVsOneExpr before v0.11.
+//
 // manyVsManyExpr constructs a multi-match many<->many db where expression.
 //
 // Expects leftSubQuery and rightSubQuery to return a subquery with a
@@ -362,8 +364,8 @@ func (e *manyVsManyExpr) Build(db *dbx.DB, params dbx.Params) string {
 		return "0=1"
 	}
 
-	lAlias := "__ml" + security.PseudorandomString(4)
-	rAlias := "__mr" + security.PseudorandomString(4)
+	lAlias := "__ml" + security.PseudorandomString(5)
+	rAlias := "__mr" + security.PseudorandomString(5)
 
 	whereExpr, buildErr := buildExpr(
 		&ResolverResult{
@@ -377,12 +379,10 @@ func (e *manyVsManyExpr) Build(db *dbx.DB, params dbx.Params) string {
 			AfterBuild: func(expr dbx.Expression) dbx.Expression {
 				expr = dbx.Not(expr) // inverse the base expression
 
-				if e.op == fexpr.SignEq || e.op == fexpr.SignNeq {
+				if e.op == fexpr.SignEq {
 					return expr
 				}
 
-				// add "IS NULL" condition in case of like or numeric comparison
-				// (gt, gte, lt, lte) to handle the "empty" multi-match rows
 				return dbx.Or(
 					expr,
 					dbx.NewExp("[["+lAlias+".multiMatchValue]] IS NULL"),
@@ -397,7 +397,7 @@ func (e *manyVsManyExpr) Build(db *dbx.DB, params dbx.Params) string {
 	}
 
 	return fmt.Sprintf(
-		"NOT EXISTS (SELECT 1 FROM (%s) {{%s}} LEFT JOIN (%s) [[%s]] WHERE %s)",
+		"NOT EXISTS (SELECT 1 FROM (%s) {{%s}} LEFT JOIN (%s) {{%s}} WHERE %s)",
 		e.leftSubQuery.Build(db, params),
 		lAlias,
 		e.rightSubQuery.Build(db, params),
@@ -430,19 +430,26 @@ func (e *manyVsOneExpr) Build(db *dbx.DB, params dbx.Params) string {
 		return "0=1"
 	}
 
-	alias := "__sm" + security.PseudorandomString(4)
+	alias := "__sm" + security.PseudorandomString(5)
 
 	r1 := &ResolverResult{
 		Identifier: "[[" + alias + ".multiMatchValue]]",
 		AfterBuild: func(expr dbx.Expression) dbx.Expression {
 			expr = dbx.Not(expr) // inverse for the not-exist expression
 
-			if e.op == fexpr.SignEq || e.op == fexpr.SignNeq {
+			if e.op == fexpr.SignEq {
 				return expr
 			}
 
-			// add "IS NULL" condition in case of like or numeric comparison
-			// (gt, gte, lt, lte) to handle the "empty" multi-match rows
+			// Add an optional "IS NULL" condition to handle the empty rows result.
+			//
+			// For example, let's assume that some "rel" field is [nonemptyRel1, nonemptyRel2, emptyRel3],
+			// The filter "rel.total > 0" will ensures that the above will return true only if all relations
+			// are existing and match the condition.
+			//
+			// The "=" operator is excluded because it will never equal directly with NULL anyway
+			// and also because we want in case "rel.id = ''" is specified to allow
+			// matching the empty relations (they will match due to the applied COALESCE).
 			return dbx.Or(expr, dbx.NewExp("[["+alias+".multiMatchValue]] IS NULL"))
 		},
 	}
