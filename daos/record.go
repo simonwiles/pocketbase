@@ -84,7 +84,7 @@ func (dao *Dao) FindRecordsByIds(
 		}
 	}
 
-	rows := []dbx.NullStringMap{}
+	rows := make([]dbx.NullStringMap, 0, len(recordIds))
 	if err := query.All(&rows); err != nil {
 		return nil, err
 	}
