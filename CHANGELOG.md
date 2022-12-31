@@ -22,6 +22,8 @@
 
 - Other minor improvements.
 
+- Fixed number field value output in the records listing ([#1447](https://github.com/pocketbase/pocketbase/issues/1447)).
+
 
 ## v0.10.4
 
