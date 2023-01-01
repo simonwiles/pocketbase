@@ -10,6 +10,8 @@
 
 - Added `filesystem.NewFileFromBytes()` helper ([#1420](https://github.com/pocketbase/pocketbase/pull/1420); thanks @dschissler).
 
+- Added `@random` sort key for `RANDOM()` sorted list results.
+
 - Added additional list-bucket check in the S3 config test API.
 
 - Added `@request.data.*.isset` modifier.
@@ -24,9 +26,11 @@
 
 - Simplified the API rules UI.
 
-- Other minor improvements.
+- `migrate down` now reverts migrations in the applied order.
 
 - Fixed number field value output in the records listing ([#1447](https://github.com/pocketbase/pocketbase/issues/1447)).
+
+- Other minor improvements.
 
 
 ## v0.10.4

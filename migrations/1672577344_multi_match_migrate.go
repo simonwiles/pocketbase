@@ -10,7 +10,7 @@ import (
 	"github.com/pocketbase/pocketbase/models/schema"
 )
 
-// This migration replaces for backward compatibility the default operands
+// This migration replaces for backward compatibility the default operators
 // (=, !=, >, etc.) with their any/opt equivalent (?=, ?=, ?>, etc.)
 // in any muli-rel expression collection rule.
 func init() {
