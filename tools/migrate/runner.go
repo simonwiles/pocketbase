@@ -242,7 +242,7 @@ func (r *Runner) lastAppliedMigrations(limit int) ([]string, error) {
 	err := r.db.Select("file").
 		From(r.tableName).
 		Where(dbx.Not(dbx.HashExp{"applied": nil})).
-		OrderBy("applied DESC").
+		OrderBy("applied DESC", "file DESC").
 		Limit(int64(limit)).
 		Column(&files)
 
