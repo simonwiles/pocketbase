@@ -5,6 +5,8 @@ import (
 	"strings"
 )
 
+const randomSortKey string = "@random"
+
 // sort field directions
 const (
 	SortAsc  string = "ASC"
@@ -19,6 +21,11 @@ type SortField struct {
 
 // BuildExpr resolves the sort field into a valid db sort expression.
 func (s *SortField) BuildExpr(fieldResolver FieldResolver) (string, error) {
+	// special case for random sort
+	if s.Name == randomSortKey {
+		return "RANDOM()", nil
+	}
+
 	result, err := fieldResolver.Resolve(s.Name)
 
 	// invalidate empty fields and non-column identifiers
