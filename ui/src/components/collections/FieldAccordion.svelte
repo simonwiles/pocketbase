@@ -109,7 +109,14 @@
     }
 
     function requiredLabel(field) {
-        return field?.type === "bool" ? "Nonfalsey" : "Nonempty";
+        switch (field?.type) {
+            case "bool":
+                return "Nonfalsey";
+            case "number":
+                return "Nonzero";
+            default:
+                return "Nonempty";
+        }
     }
 
     onMount(() => {
