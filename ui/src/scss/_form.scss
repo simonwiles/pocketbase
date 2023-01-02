@@ -346,10 +346,6 @@ button {
             $thumbActiveColor: var(--baseAlt4Color)
         );
     }
-    &:focus,
-    &.active {
-        border-color: var(--primaryColor);
-    }
     &[readonly],
     &.readonly {
         cursor: default;
@@ -359,7 +355,7 @@ button {
     &.disabled {
         cursor: default;
         color: var(--txtDisabledColor);
-        border-color: var(--baseAlt2Color);
+        background: var(--bodyColor);
     }
     &.txt-mono {
         line-height: var(--smLineHeight);
@@ -537,7 +533,7 @@ select {
             color: var(--txtDisabledColor);
         }
         label, %input {
-            border-color: var(--baseAlt2Color);
+            background: var(--bodyColor);
         }
         &.required > label:after {
             opacity: 0.5;

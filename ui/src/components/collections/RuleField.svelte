@@ -58,7 +58,9 @@
         let:uniqueId
     >
         <label for={uniqueId}>
-            <span class="txt">{label} - {isAdminOnly ? "Admins only" : "Custom rule"}</span>
+            <span class="label label-sm {isAdminOnly ? '' : 'label-primary'}">
+                {label} - {isAdminOnly ? "Admins only" : "Custom rule"}
+            </span>
 
             {#if isAdminOnly}
                 <button type="button" class="lock-toggle link-success" on:click={unlock}>
